@@ -503,7 +503,6 @@ class ConduitCompatibleClient {
 }
 
 
-//# sourceMappingURL=index.mjs.map
 
 
 },
@@ -1341,4 +1340,3 @@ class Frame {
 $netCtl = __webpack_exports__;
 })()
 ;
-//# sourceMappingURL=controller.api.js.map
