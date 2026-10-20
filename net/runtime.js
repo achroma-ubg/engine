@@ -1838,6 +1838,15 @@ __webpack_require__.d(__webpack_exports__, {
             // undefined opens an about:blank window, pass through
             if (typeof ctx.args[0] !== "undefined") {
                 const url = (0,_shared_snapshot__rspack_import_1.String)(ctx.args[0]);
+                // achroma: a page opening a new window to its own current URL
+                // is the "tab-under" ad trick (the copy keeps the site, the
+                // original tab is sent to an ad); refuse it like a popup blocker.
+                if (url !== "") {
+                    try {
+                        const target = new URL(url, client.url.href);
+                        if (target.href.split("#")[0] === client.url.href.split("#")[0]) return ctx.return(null);
+                    } catch {}
+                }
                 // blank also opens an about:blank window
                 if (url !== "") {
                     // note that null or anything else will *not* open an about:blank window
