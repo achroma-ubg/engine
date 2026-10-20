@@ -453,7 +453,7 @@ class ConnectionClient {
                 }
                 if (!frame.name) {
                     // the top frame is net-controlled, but it has no name. this is user error
-                    dbg.error("YOU NEED TO USE `new CorridorFrame()`! DIRECT IFRAMES WILL NOT WORK");
+                    dbg.error("YOU NEED TO USE `new FrameConnector()`! DIRECT IFRAMES WILL NOT WORK");
                     return null;
                 }
                 return frame.name;
@@ -476,12 +476,12 @@ class ConnectionClient {
                         const parentClient = parentWin[_symbols__rspack_import_1.CONNECTIONCLIENT];
                         const frame = parentClient.descriptors.get("window.frameElement", parentWin);
                         if (!frame) {
-                            // parent is corridor controlled and top-level. there is no parent frame name
+                            // parent is net controlled and top-level. there is no parent frame name
                             return null;
                         }
                         if (!frame.name) {
                             // the parent frame is net-controlled, but it has no name. this is user error
-                            dbg.error("YOU NEED TO USE `new CorridorFrame()`! DIRECT IFRAMES WILL NOT WORK");
+                            dbg.error("YOU NEED TO USE `new FrameConnector()`! DIRECT IFRAMES WILL NOT WORK");
                             return null;
                         }
                         return frame.name;
@@ -491,7 +491,7 @@ class ConnectionClient {
                         const frame = client.descriptors.get("window.frameElement", client.global);
                         if (!frame.name) {
                             // the parent frame is not net-controlled, so we can't get a parent frame name
-                            dbg.error("YOU NEED TO USE `new CorridorFrame()`! DIRECT IFRAMES WILL NOT WORK");
+                            dbg.error("YOU NEED TO USE `new FrameConnector()`! DIRECT IFRAMES WILL NOT WORK");
                             return null;
                         }
                         return frame.name;
@@ -1710,7 +1710,7 @@ function collectAttributeMap(client, element, overrideName, overrideValue) {
         apply (ctx) {
             const doc = ctx.call();
             if (doc) {
-                // we trap the contentDocument, this is really the corridor version
+                // we trap the contentDocument, this is really the net version
                 return ctx.return(ctx.this.contentDocument);
             }
         }
@@ -1857,7 +1857,7 @@ __webpack_require__.d(__webpack_exports__, {
             const realwin = ctx.call();
             if (!realwin) return ctx.return(realwin);
             if (!(_symbols__rspack_import_0.CONNECTIONCLIENT in realwin)) {
-                // i don't believe it's possible for a just-opened window to already have corridor loaded but just in case
+                // i don't believe it's possible for a just-opened window to already have net loaded but just in case
                 client.init.hookSubcontext(realwin);
             }
             return realwin;
@@ -1869,7 +1869,7 @@ __webpack_require__.d(__webpack_exports__, {
             if (!f) return f;
             const win = f.ownerDocument.defaultView;
             if (win[_symbols__rspack_import_0.CONNECTIONCLIENT]) {
-                // then this is a subframe in a corridor context, and it's safe to pass back the real iframe
+                // then this is a subframe in a net context, and it's safe to pass back the real iframe
                 return f;
             } else {
                 // no, the top frame is outside the sandbox
@@ -2060,7 +2060,7 @@ __webpack_require__.d(__webpack_exports__, {
   iswindow: () => (iswindow),
   isworker: () => (isworker)
 });
-// entrypoint for corridor.client.js
+// entrypoint for net.client.js
 const iswindow = "window" in globalThis && window instanceof Window;
 const isworker = "WorkerGlobalScope" in globalThis;
 const issw = "ServiceWorkerGlobalScope" in globalThis;
@@ -2279,7 +2279,7 @@ __webpack_require__.d(__webpack_exports__, {
     client.Proxy("URL.revokeObjectURL", {
         apply (ctx) {
             setTimeout(()=>{
-                // corridor rewrites blob urls to pass through the service worker first
+                // net rewrites blob urls to pass through the service worker first
                 // this is neccesary if rewrites need to be applied to the blob
                 // the issue is that if you call revokeObjectURL immediately after using the blob
                 // the service worker will not have had time to download the blob
@@ -2474,14 +2474,14 @@ __webpack_require__.d(__webpack_exports__, {
 
 const enabled = (client)=>client.flagEnabled("cleanErrors");
 /* export default */ function __rspack_default_export(client, _self) {
-    // v8 only. all we need to do is clean the corridor urls from stack traces
+    // v8 only. all we need to do is clean the net urls from stack traces
     const closure = (error, stack)=>{
         let newstack = error.stack;
         for(let i = 0; i < stack.length; i++){
             const url = stack[i].getFileName();
             try {
                 if (client.config.maskedfiles.some((f)=>url.endsWith(f))) {
-                    // strip stack frames including corridor handlers from the trace
+                    // strip stack frames including net handlers from the trace
                     const lines = newstack.split("\n");
                     const line = lines.find((l)=>l.includes(url));
                     lines.splice(line, 1);
@@ -2884,12 +2884,12 @@ __webpack_require__.d(__webpack_exports__, {
             }
             // and now we can steal Function from the caller's realm
             const { constructor: { constructor: Function } } = pollutant;
-            // invoking stolen function will give us the caller's globalThis, remember corridor has already proxied it!!!
+            // invoking stolen function will give us the caller's globalThis, remember net has already proxied it!!!
             const callerGlobalThisProxied = Function("return globalThis")();
             const callerClient = callerGlobalThisProxied[_symbols__rspack_import_1.CONNECTIONCLIENT];
             // this WOULD be enough but the source argument of MessageEvent has to return the caller's window
             // and if we just call it normally it would be coming from here, which WILL NOT BE THE CALLER'S because the accessor is from the parent
-            // so with the stolen function we wrap postmessage so the source will truly be the caller's window (remember that function is corridor's!!!)
+            // so with the stolen function we wrap postmessage so the source will truly be the caller's window (remember that function is net's!!!)
             const wrappedPostMessage = Function("...args", "this(...args)");
             // console.log(
             // 	callerClient,
@@ -3627,7 +3627,7 @@ function extractTag(fn) {
     // it will look like this:
     // function name()[possible whitespace]/*corr_tag [index] [tag]*/[possible whitespace]{ ... }
     const start = fn.indexOf(CORR_TAG);
-    // no corr_tag, probably native function or stolen from corridor
+    // no corr_tag, probably native function or stolen from net
     if (start === -1) return null;
     const end = fn.indexOf("*/", start);
     if (end === -1) {
@@ -3819,7 +3819,7 @@ function createWrapFn(client, self) {
             // accessing self.parent can throw if it's cross-origin, in which case we should also pretend we aren't nested
             wrappedParent = self;
         }
-        // instead of returning top, we need to return the uppermost parent that's inside a corridor context
+        // instead of returning top, we need to return the uppermost parent that's inside a net context
         let current = self;
         for(;;){
             const test = current.parent.self;
@@ -4389,7 +4389,7 @@ async function rewriteResponseHeaders(handler, request, parsed, rawHeaders) {
     if (headers.get("accept") === "text/event-stream") {
         headers.set("content-type", "text/event-stream");
     }
-    // corridor runtime can use features that permissions-policy blocks
+    // net runtime can use features that permissions-policy blocks
     headers.delete("permissions-policy");
     // we handle this ourselves
     headers.delete("set-cookie");
@@ -4411,7 +4411,7 @@ async function rewriteResponseHeaders(handler, request, parsed, rawHeaders) {
 }
 function rewriteRequestHeaders(request, handler, parsed) {
     const headers = request.initialHeaders.clone();
-    // avoid leaking the corridor referer
+    // avoid leaking the net referer
     headers.delete("Referer");
     const rawOriginUrl = parsed.referrerSourceUrl !== undefined ? parsed.referrerSourceUrl : request.rawClientUrl || (request.rawReferrer ? new _shared_snapshot__rspack_import_1._URL(request.rawReferrer) : undefined);
     const originUrl = rawOriginUrl && rawOriginUrl.pathname.startsWith(handler.context.prefix.pathname) ? new _shared_snapshot__rspack_import_1._URL((0,_shared__rspack_import_0.unrwUrl)(rawOriginUrl, handler.context)) : rawOriginUrl;
@@ -4538,7 +4538,7 @@ function rewriteRequestHeaders(request, handler, parsed) {
  *
  * The browser's `event.request.mode` reported in the SW is unsafe to trust
  * for `fetch()` / `new Request()` calls — those compute mode against the
- * request URL's relationship to the page, and corridor has rewritten the URL
+ * request URL's relationship to the page, and the net layer has rewritten the URL
  * to be same-origin to the page, so the SW always sees "same-origin"
  * regardless of the page's actual `init.mode`. For HTML resource fetches
  * (`<script crossorigin>`, `<img crossorigin>`, …) the mode is derived from
@@ -4569,7 +4569,7 @@ function rewriteRequestHeaders(request, handler, parsed) {
     // element's CORS attribute (`<script crossorigin>` ⇒ "cors", plain
     // `<script>` ⇒ "no-cors"), so trust it. Reject "same-origin"/"navigate"
     // since those indicate the value came from URL-origin matching against
-    // corridor's proxy origin and is meaningless to the destination.
+    // net's proxy origin and is meaningless to the destination.
     if (request.mode === "cors" || request.mode === "no-cors") {
         return request.mode;
     }
@@ -4595,7 +4595,7 @@ function rewriteRequestHeaders(request, handler, parsed) {
     if (candidate.pathname.startsWith(handler.context.prefix.pathname)) {
         return new _shared_snapshot__rspack_import_1._URL((0,_shared__rspack_import_0.unrwUrl)(candidate, handler.context));
     }
-    // The candidate URL is outside corridor's logical space (e.g. the runway
+    // The candidate URL is outside net's logical space (e.g. the runway
     // harness wrapper page, or a chrome:// page kicking off a navigation).
     // There's no meaningful "initiator" in the proxied site's frame of
     // reference, so treat it as a browser-initiated request — Sec-Fetch-Site
@@ -5170,7 +5170,7 @@ class CookieJar {
                 for (const cookie of bucket){
                     if (cookie.expires !== undefined && cookie.expires < now) continue;
                     if (cookie.hostOnly && key !== hostname) continue;
-                    // Corridor proxies all origins as HTTPS (including those served over HTTP),
+                    // Net proxies all origins as HTTPS (including those served over HTTP),
                     // so we don't enforce the Secure attribute based on protocol here.
                     // if (cookie.secure && url.protocol !== "https:") continue;
                     if (cookie.httpOnly && fromJs) continue;
@@ -7951,7 +7951,7 @@ const CONNECTIONCLIENT = (0,_shared_snapshot__rspack_import_0.Symbol_for)(CONNEC
 "./packages/core/src/types.ts"(__unused_rspack_module, __webpack_exports__, __webpack_require__) {
 __webpack_require__.r(__webpack_exports__);
 /**
- * Version information for the current Corridor build.
+ * Version information for the current Net build.
  * Contains both the semantic version string and the git commit hash for build identification.
  */ //eslint-disable-next-line
 
@@ -13124,9 +13124,9 @@ __webpack_require__.d(__webpack_exports__, {
 /* import */ var _fetch__rspack_import_7 = __webpack_require__("./packages/core/src/fetch/index.ts");
 /* import */ var _mercuryworkshop_proxy_relays__rspack_import_8 = __webpack_require__("./node_modules/.pnpm/@mercuryworkshop+proxy-relays@1.0.2/node_modules/@mercuryworkshop/proxy-relays/dist/index.mjs");
 /* import */ var _client__rspack_import_9 = __webpack_require__("./packages/core/src/client/index.ts");
-// NOTE: this is the entrypoint for corridor.bundle.js
-// as such it exports everything in corridor
-// the entry point for corridor.all.js (what most sites wil use) is entry.ts
+// NOTE: this is the entrypoint for net.bundle.js
+// as such it exports everything in net
+// the entry point for net.all.js (what most sites wil use) is entry.ts
 
 
 

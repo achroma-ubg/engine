@@ -1075,8 +1075,17 @@ class Controller {
                 return;
             }
             if (e.data.$sdk$swrevive) {
-                // if we just spawned the service worker, it will send this even though it's not actually dead
-                // TODO: pretty jank, fix at some point
+                // achroma: the worker lists the tabs it already has, so re-register
+                // exactly when this one is missing. A connected tab keeps its port
+                // (no dropped in-flight requests) and a worker that restarted within
+                // a few seconds of connecting still gets us back.
+                const registered = e.data.$sdk$swrevive.registered;
+                if (Array.isArray(registered)) {
+                    if (!registered.includes(this.id)) this.setupMessagePort();
+                    return;
+                }
+                // older worker without the list: if we just spawned it, it sends
+                // this even though it isn't actually dead
                 if (this.guardServiceWorkerRevive) {
                     return;
                 }

@@ -262,7 +262,7 @@ function requestRevive() {
     console.warn("[proxy] proxied fetch with no registered tab — requesting re-init");
     clients.matchAll().then((all)=>{
         for (const client of all) client.postMessage({
-            $sdk$swrevive: {}
+            $sdk$swrevive: { registered: tabs.map((t)=>t.id) }
         });
     });
 }
@@ -311,7 +311,26 @@ function errorPage(detail) {
             "&": "&amp;",
             '"': "&quot;"
         }[c]));
-    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Failed to load — achroma</title><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap" rel="stylesheet"><style>html,body{margin:0;height:100%;background:transparent;font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}body{display:flex;align-items:center;justify-content:center}.wrap{text-align:center;padding:24px;max-width:560px}h1{font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#fff;font-size:28px;font-weight:700;margin:0 0 10px}p{font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:rgba(255,255,255,.55);font-size:14px;line-height:1.6;margin:0 0 18px}code{display:inline-block;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px;color:rgba(255,255,255,.75);background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);border-radius:8px;padding:8px 12px;max-width:100%;word-break:break-all;text-align:left}</style></head><body><div class="wrap"><h1>Uh oh!</h1><p>Something failed, and achroma failed to load the page. Try refreshing.</p><code>${safe}</code></div></body></html>`;
+    // A Settings-style card (settings.css .settings-card / -header / -row):
+    // "ERROR" header, then one row with the explanation on the left and the
+    // raw error on the right (stacked below on narrow frames). Centred with
+    // margin:auto so a tall card scrolls instead of being cut off.
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Failed to load — achroma</title><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Roboto:wght@500&display=swap" rel="stylesheet"><style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{min-height:100%;background:transparent;font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:rgba(255,255,255,.92)}
+body{display:flex;min-height:100vh;padding:20px;overflow:auto}
+.card{margin:auto;width:100%;max-width:760px;padding:4px 0 0;background:rgba(6,6,6,.72);-webkit-backdrop-filter:blur(24px);backdrop-filter:blur(24px);border:1px solid rgba(255,255,255,.1);border-radius:14px}
+.head{padding:12px 18px 4px;font:500 11px Roboto,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:.06em;text-transform:uppercase;color:rgba(255,255,255,.4)}
+.row{display:flex;align-items:stretch;gap:28px;padding:10px 18px 22px}
+.text{flex:1;min-width:0}
+h1{font-size:17px;font-weight:600;letter-spacing:-.01em;color:rgba(255,255,255,.95)}
+p{margin-top:6px;font-size:13px;line-height:1.5;color:rgba(255,255,255,.5)}
+ul{margin-top:12px;list-style:none;display:flex;flex-direction:column;gap:8px}
+li{position:relative;padding-left:16px;font-size:13px;line-height:1.45;color:rgba(255,255,255,.72)}
+li::before{content:"";position:absolute;left:3px;top:.55em;width:5px;height:5px;border-radius:50%;background:rgba(255,255,255,.35)}
+code{flex:0 1 46%;min-width:0;min-height:150px;max-height:220px;overflow:auto;padding:9px 12px;background:#000;border:1px solid rgba(255,255,255,.14);border-radius:12px;font:12px/1.5 ui-monospace,"SF Mono",Menlo,Consolas,monospace;color:rgba(255,255,255,.75);white-space:pre-wrap;overflow-wrap:anywhere;scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.2) transparent}
+@media (max-width:560px){.row{flex-direction:column;gap:16px}code{flex:none;min-height:0;max-height:160px}}
+</style></head><body><section class="card"><h2 class="head">Error</h2><div class="row"><div class="text"><h1>Uh oh!</h1><p>Achroma hit a problem whilst trying to load this page. Try these steps:</p><ul><li>Refresh the page</li><li>Check your internet connection</li><li>Try again in a few minutes, the site may be down</li><li>Contact the site administrator if it keeps happening</li></ul></div><code>${safe}</code></div></section></body></html>`;
     return new Response(html, {
         status: 200,
         headers: {
@@ -324,7 +343,7 @@ function errorPage(detail) {
 // SW-restart race where the waking fetch arrives before the client's
 // $controller$init handshake lands. Returns the tab or null.
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-async function tabAwaiting(pathname, timeoutMs = 2500) {
+async function tabAwaiting(pathname, timeoutMs = 5000) {
     let tab = tabForPathname(pathname);
     if (tab) return tab;
     requestRevive();
@@ -404,7 +423,7 @@ setTimeout(async ()=>{
     console.log("service worker activated, notifying clients to revive");
     for (const client of (await clients.matchAll())){
         client.postMessage({
-            $sdk$swrevive: {}
+            $sdk$swrevive: { registered: tabs.map((t)=>t.id) }
         });
     }
 // short delay is apparently needed
