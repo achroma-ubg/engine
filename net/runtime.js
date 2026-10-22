@@ -5370,6 +5370,11 @@ const htmlRules = [
     },
     {
         fn: (value, context, meta)=>{
+            // achroma: an empty src is a blank frame in a browser. Rewritten,
+            // "" resolved to the page's own proxied address, so a page with
+            // <iframe src=""> (bingebang.st's trailer players) loaded itself
+            // inside itself, over and over.
+            if (!value || !(0,_snapshot__rspack_import_3.String)(value).trim()) return value;
             const url = (0,_rewriters_url__rspack_import_2.rwUrl)(value, context, meta, {
                 topFrame: meta.topFrameName,
                 parentFrame: meta.parentFrameName,
