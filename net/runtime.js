@@ -1302,6 +1302,27 @@ function collectAttributeMap(client, element, overrideName, overrideValue) {
             return (0,_rewriters_url__rspack_import_6.unrwUrl)(currentSrc, client.context);
         }
     });
+    // img src IDL getter: unrewrite on read so detection probes see the original URL.
+    for (const _imgSrcTarget of [
+        self.HTMLImageElement,
+        self.HTMLMediaElement,
+        self.HTMLIFrameElement,
+        self.HTMLFrameElement,
+        self.HTMLEmbedElement,
+        self.HTMLScriptElement,
+        self.HTMLSourceElement
+    ]) {
+        if (!_imgSrcTarget || !_imgSrcTarget.prototype) continue;
+        const _imgSrcDesc = Object.getOwnPropertyDescriptor(_imgSrcTarget.prototype, "src");
+        if (!_imgSrcDesc || !_imgSrcDesc.get) continue;
+        client.RawTrap(_imgSrcTarget.prototype, "src", {
+            get (ctx) {
+                const src = ctx.get();
+                if (!src) return src;
+                return (0,_rewriters_url__rspack_import_6.unrwUrl)(src, client.context);
+            }
+        });
+    }
     // note that href is not here
     const urlprops = [
         "protocol",
