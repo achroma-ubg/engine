@@ -1622,7 +1622,172 @@ var EpoxyTransport = class {
       throw err;
     }
   }
+  // Achroma (2026-11-06): WebSockets are opened here, over epoxy's raw
+  // TCP/TLS streams, instead of epoxy's own websocket. epoxy 2.1.19 (and
+  // upstream at 9cde724) writes the request line in absolute form,
+  // "GET wss://host:port/path HTTP/1.1", and leaves the port out of Host.
+  // Strict servers answer that with 400 or nothing: GeForce NOW's game
+  // session socket, MQTT brokers (EMQX, HiveMQ). Browsers send
+  // "GET /path HTTP/1.1" and "Host: host:port", and so does this. It also
+  // reports the subprotocol the server picked and real close codes, which
+  // epoxy's websocket can't. If the handshake fails before opening, it
+  // falls back to epoxy's websocket, so nothing that worked before breaks.
   connect(url, protocols, requestHeaders, onopen, onmessage, onclose, onerror) {
+    const client = this.client;
+    const enc = new TextEncoder();
+    const dec = new TextDecoder();
+    const st = { opened: false, done: false, sentClose: false, writer: null, chain: Promise.resolve(), native: null };
+    const finish = (fn) => { if (st.done) return; st.done = true; fn(); try { st.writer && st.writer.close().catch(() => {}); } catch (e) {} };
+    const writeRaw = (bytes) => { st.chain = st.chain.then(() => st.writer.write(bytes)).catch(() => {}); return st.chain; };
+    const frame = (opcode, payload) => {
+      const len = payload.length;
+      const head = len < 126 ? 2 : len < 65536 ? 4 : 10;
+      const out = new Uint8Array(head + 4 + len);
+      out[0] = 0x80 | opcode;
+      if (len < 126) out[1] = 0x80 | len;
+      else if (len < 65536) { out[1] = 0x80 | 126; out[2] = len >> 8; out[3] = len & 255; }
+      else { out[1] = 0x80 | 127; const dv = new DataView(out.buffer); dv.setUint32(2, Math.floor(len / 4294967296)); dv.setUint32(6, len >>> 0); }
+      const mask = crypto.getRandomValues(new Uint8Array(4));
+      out.set(mask, head);
+      for (let i = 0; i < len; i++) out[head + 4 + i] = payload[i] ^ mask[i & 3];
+      return out;
+    };
+    const fallback = (why) => {
+      if (st.opened || st.done) return false;
+      console.warn("[transport] websocket handshake failed (" + why + "), retrying with epoxy's websocket");
+      st.done = true;
+      try { st.writer && st.writer.close().catch(() => {}); } catch (e) {}
+      st.native = this.connectNative(url, protocols, requestHeaders, onopen, onmessage, onclose, onerror);
+      return true;
+    };
+    (async () => {
+      const secure = url.protocol === "wss:" || url.protocol === "https:";
+      const port = url.port || (secure ? "443" : "80");
+      const io = await (secure ? client.connect_tls(`https://${url.hostname}:${port}`) : client.connect_tcp(`http://${url.hostname}:${port}`));
+      st.writer = io.write.getWriter();
+      const reader = io.read.getReader();
+      const keyBytes = crypto.getRandomValues(new Uint8Array(16));
+      const key = btoa(String.fromCharCode(...keyBytes));
+      const skip = /^(host|connection|upgrade|sec-websocket-(key|version|protocol|extensions|accept)|content-length|transfer-encoding)$/i;
+      const lines = [
+        `GET ${url.pathname || "/"}${url.search} HTTP/1.1`,
+        `Host: ${url.port ? `${url.hostname}:${url.port}` : url.hostname}`,
+        "Connection: Upgrade",
+        "Upgrade: websocket",
+        `Sec-WebSocket-Key: ${key}`,
+        "Sec-WebSocket-Version: 13",
+      ];
+      if (protocols.length) lines.push(`Sec-WebSocket-Protocol: ${protocols.join(", ")}`);
+      let hasUA = false;
+      for (const [k, v] of requestHeaders) {
+        if (skip.test(k) || /[\r\n]/.test(k + v)) continue;
+        if (/^user-agent$/i.test(k)) hasUA = true;
+        lines.push(`${k}: ${v}`);
+      }
+      if (!hasUA) { try { if (client.user_agent) lines.push(`User-Agent: ${client.user_agent}`); } catch (e) {} }
+      await st.writer.write(enc.encode(lines.join("\r\n") + "\r\n\r\n"));
+
+      // Bytes in from the stream, read through `buf` from `pos`.
+      let buf = new Uint8Array(0);
+      let pos = 0;
+      let ended = false;
+      const more = async () => {
+        const { value, done } = await reader.read();
+        if (done) { ended = true; return false; }
+        const left = buf.length - pos;
+        const next = new Uint8Array(left + value.length);
+        next.set(buf.subarray(pos), 0);
+        next.set(value, left);
+        buf = next; pos = 0;
+        return true;
+      };
+      const need = async (n) => { while (buf.length - pos < n) if (!(await more())) return false; return true; };
+
+      // The response head.
+      let headEnd = -1;
+      for (;;) {
+        for (let i = Math.max(pos, 0); i + 3 < buf.length; i++) if (buf[i] === 13 && buf[i + 1] === 10 && buf[i + 2] === 13 && buf[i + 3] === 10) { headEnd = i; break; }
+        if (headEnd >= 0) break;
+        if (buf.length > 65536 || !(await more())) { if (fallback("no response")) return; throw new Error("WebSocket handshake: no response"); }
+      }
+      const head = dec.decode(buf.subarray(0, headEnd)).split("\r\n");
+      pos = headEnd + 4;
+      const status = Number((head[0].match(/^HTTP\/1\.[01] (\d{3})/) || [])[1]);
+      const headers = {};
+      for (const line of head.slice(1)) { const i = line.indexOf(":"); if (i > 0) headers[line.slice(0, i).trim().toLowerCase()] = line.slice(i + 1).trim(); }
+      if (status !== 101) { if (fallback("status " + status)) return; throw new Error(`Invalid websocket response status code: ${status} != 101`); }
+      const digest = new Uint8Array(await crypto.subtle.digest("SHA-1", enc.encode(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")));
+      if (headers["sec-websocket-accept"] !== btoa(String.fromCharCode(...digest))) { if (fallback("bad accept key")) return; throw new Error("WebSocket handshake: bad Sec-WebSocket-Accept"); }
+      const chosen = headers["sec-websocket-protocol"] || "";
+      if (chosen && !protocols.includes(chosen)) throw new Error("WebSocket handshake: server chose a protocol that wasn't offered");
+      st.opened = true;
+      onopen(chosen, headers["sec-websocket-extensions"] || "");
+
+      // Frames.
+      let parts = [];
+      let partsOp = 0;
+      for (;;) {
+        if (!(await need(2))) break;
+        const b0 = buf[pos], b1 = buf[pos + 1];
+        let len = b1 & 127, off = 2;
+        if (len === 126) { if (!(await need(4))) break; len = (buf[pos + 2] << 8) | buf[pos + 3]; off = 4; }
+        else if (len === 127) { if (!(await need(10))) break; const dv = new DataView(buf.buffer, buf.byteOffset + pos); len = dv.getUint32(2) * 4294967296 + dv.getUint32(6); off = 10; }
+        const masked = (b1 & 128) !== 0;
+        if (masked) off += 4;
+        if (!(await need(off + len))) break;
+        let payload = buf.slice(pos + off, pos + off + len);
+        if (masked) { const m = buf.subarray(pos + off - 4, pos + off); for (let i = 0; i < len; i++) payload[i] ^= m[i & 3]; }
+        pos += off + len;
+        const fin = (b0 & 128) !== 0;
+        const op = b0 & 15;
+        if (op === 8) {
+          const code = len >= 2 ? (payload[0] << 8) | payload[1] : 1005;
+          const reason = len > 2 ? dec.decode(payload.subarray(2)) : "";
+          if (!st.sentClose) { st.sentClose = true; await writeRaw(frame(8, len >= 2 ? payload.subarray(0, 2) : new Uint8Array(0))); }
+          finish(() => onclose(code, reason));
+          return;
+        }
+        if (op === 9) { if (!st.sentClose) writeRaw(frame(10, payload)); continue; }
+        if (op === 10) continue;
+        if (op === 1 || op === 2) { parts = [payload]; partsOp = op; }
+        else if (op === 0) parts.push(payload);
+        else continue;
+        if (!fin) continue;
+        let data = parts[0];
+        if (parts.length > 1) { const total = parts.reduce((a, p) => a + p.length, 0); data = new Uint8Array(total); let o = 0; for (const p of parts) { data.set(p, o); o += p.length; } }
+        parts = [];
+        if (partsOp === 1) onmessage(dec.decode(data));
+        else onmessage(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
+      }
+      finish(() => onclose(1006, ""));
+    })().catch((err) => {
+      if (st.native) return;
+      if (fallback(String(err && err.message || err))) return;
+      finish(() => onerror(String(err && err.message || err)));
+    });
+    return [
+      async (data) => {
+        if (st.native) return (await st.native)[0](data);
+        if (st.done || st.sentClose || !st.writer) return;
+        if (typeof Blob !== "undefined" && data instanceof Blob) data = await data.arrayBuffer();
+        if (typeof data === "string") return writeRaw(frame(1, enc.encode(data)));
+        const bytes = data instanceof ArrayBuffer ? new Uint8Array(data) : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+        return writeRaw(frame(2, bytes));
+      },
+      async (code, reason) => {
+        if (st.native) return st.native[1](code, reason);
+        if (st.done || st.sentClose || !st.writer) return;
+        st.sentClose = true;
+        const r = enc.encode(reason || "");
+        const p = new Uint8Array(2 + r.length);
+        const c = code || 1000;
+        p[0] = c >> 8; p[1] = c & 255; p.set(r, 2);
+        await writeRaw(frame(8, p));
+        setTimeout(() => finish(() => onclose(c, reason || "")), 3000);
+      }
+    ];
+  }
+  connectNative(url, protocols, requestHeaders, onopen, onmessage, onclose, onerror) {
     let handlers = new EpoxyHandlers(
       // epoxy does not support getting the server selected protocol/extension
       () => onopen("", ""),
@@ -1649,6 +1814,7 @@ var EpoxyTransport = class {
       protocols,
       headersObj
     );
+    ws.catch(() => {}); // failures already reach onerror through the handlers
     return [
       async (data) => {
         if (data instanceof Blob) data = await data.arrayBuffer();
