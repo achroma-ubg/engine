@@ -5345,7 +5345,6 @@ const htmlRules = [
             }),
         // url rewrites
         src: [
-            "embed",
             "img",
             "frame",
             "input",
@@ -5355,9 +5354,6 @@ const htmlRules = [
             "a",
             "area",
             "image"
-        ],
-        data: [
-            "object"
         ],
         action: [
             "form"
@@ -5373,6 +5369,27 @@ const htmlRules = [
         ],
         "xlink:href": [
             "image"
+        ]
+    },
+    {
+        // achroma: <object data> / <embed src>. Plugin loads never go through
+        // the service worker, so a rewritten data: URL reached the server and
+        // failed. Players such as vidy.st (youshows' default server) load a
+        // tiny data:application/pdf in an <object> and read the error as "this
+        // iframe is sandboxed". A data: PDF or image is self-contained: left
+        // as it is. Anything else (data: HTML can run script) is still rewritten.
+        fn: (value, context, meta)=>{
+            const v = (0,_snapshot__rspack_import_3.String)(value ?? "");
+            if (/^\s*data:(application\/pdf|image\/)/i.test(v)) return value;
+            return (0,_rewriters_url__rspack_import_2.rwUrl)(value, context, meta, {
+                navigateType: "location"
+            });
+        },
+        src: [
+            "embed"
+        ],
+        data: [
+            "object"
         ]
     },
     {
