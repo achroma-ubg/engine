@@ -14,7 +14,7 @@
 (() => {
   if (globalThis.__achHealSw) return;
   globalThis.__achHealSw = true;
-  const APIS = globalThis.__achHealApis || ['https://bikesense.org', 'https://api.streetdirectory.sg'];
+  const APIS = globalThis.__achHealApis || ['https://bikesense.org', 'https://api.streetdirectory.sg', 'https://api.vaizer.cl', 'https://api.sexualidadesrosario.com.ar', 'https://api.fysiomotion.se', 'https://api.garnier-audebourg.org', 'https://api.shredstreet.com', 'https://api.alcrb.ru', 'https://api.whatastupididea.com', 'https://api.jurematoz.com', 'https://api.bsfa.info', 'https://api.rymconstrucciones.cl', 'https://api.tenspot.net', 'https://api.shor.ch', 'https://api.fotograflar.com', 'https://api.tuplantaforma.com', 'https://api.spf50krem.com'];
   const SRCS = globalThis.__achHealSrcs || ['https://cdn.jsdelivr.net/gh/achroma-ubg/svg@latest/', 'https://fastly.jsdelivr.net/gh/achroma-ubg/svg@latest/',
     'https://gcore.jsdelivr.net/gh/achroma-ubg/svg@latest/', 'https://bikesense.org/ld/', 'https://api.streetdirectory.sg/ld/'];
   const KEYS = ['BF6fDhSmgskX8+HaG+ZZosthRofJdcIJSG2Ac7ge1AzO06aKsqUtOzJ0KU4SCjtxif649gUJ68Mi7eIKwRrm/Ss='];
@@ -46,14 +46,22 @@
   }
   const timed = (url, opt, ms) => fetch(url, { ...opt, signal: AbortSignal.timeout(ms) });
 
-  async function ask() {
-    for (const api of APIS) {
-      try {
-        const r = await timed(api + '/api/integrity?page=' + encodeURIComponent(origin + '/') + '&quick=1', { cache: 'no-store', credentials: 'omit' }, 30000);
-        if (r.ok) return await r.json();
-      } catch {}
-    }
-    return null;
+  // Every API host is tried: the next one starts 1.5 s after the last (or at once when one fails),
+  // and the first good answer wins.
+  function ask() {
+    return new Promise((resolve) => {
+      const started = []; let failed = 0, done = false;
+      const fail = () => { if (++failed >= APIS.length && !done) resolve(null); };
+      const start = (i) => {
+        if (done || i >= APIS.length || started[i]) return;
+        started[i] = 1;
+        setTimeout(() => start(i + 1), 1500);
+        timed(APIS[i] + '/api/integrity?page=' + encodeURIComponent(origin + '/') + '&quick=1', { cache: 'no-store', credentials: 'omit' }, 30000)
+          .then((r) => (r.ok ? r.json() : Promise.reject()))
+          .then((j) => { if (!done) { done = true; resolve(j); } }, () => { fail(); start(i + 1); });
+      };
+      start(0);
+    });
   }
   async function manifest() {
     for (const s of SRCS) {
