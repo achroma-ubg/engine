@@ -49,7 +49,7 @@
   async function ask() {
     for (const api of APIS) {
       try {
-        const r = await timed(api + '/api/integrity?page=' + encodeURIComponent(origin + '/'), { cache: 'no-store', credentials: 'omit' }, 30000);
+        const r = await timed(api + '/api/integrity?page=' + encodeURIComponent(origin + '/') + '&quick=1', { cache: 'no-store', credentials: 'omit' }, 30000);
         if (r.ok) return await r.json();
       } catch {}
     }
@@ -105,7 +105,8 @@
       await load();
       const r = await ask();
       if (!r) { if (!v) v = { t: Date.now() - FRESH + 5 * 60e3, ok: true }; return save(); }   // no answer: carry on, ask again in 5 min
-      if (r.ok !== false) { v = { t: Date.now(), ok: true }; return save(); }
+      // pending = clean so far, the API is still reading the copy's files: ask again in a minute
+      if (r.ok !== false) { v = { t: r.pending ? Date.now() - FRESH + 60e3 : Date.now(), ok: true }; return save(); }
       const next = { t: Date.now(), ok: false, mode: r.mode === 'cache' ? 'cache' : 'frame', link: r.link && r.link.url, homes: r.homes || [] };
       if (next.mode === 'cache') {
         try { Object.assign(next, await install()); markHealed(); } catch { next.mode = 'frame'; }   // could not fetch the official build: frame instead
