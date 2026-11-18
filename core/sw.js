@@ -27,7 +27,7 @@
   const base = () => new URL(self.registration.scope).pathname;
   const stateKey = () => origin + base() + '__achroma_heal__';
 
-  let v = null, loaded = null, running = null;   // v: { t, ok } | { t, ok:false, mode, link, homes, ver, files, doc }
+  let v = null, loaded = null, running = null, installing = null;   // v: { t, ok } | { t, ok:false, mode, link, homes, ver, files, doc }
   const load = () => loaded || (loaded = caches.open(STATE).then((c) => c.match(stateKey())).then((r) => r && r.json()).then((s) => { v = s || null; }).catch(() => {}));
   const save = () => caches.open(STATE).then((c) => c.put(stateKey(), new Response(JSON.stringify(v)))).catch(() => {});
 
@@ -107,16 +107,31 @@
       if (!r) { if (!v) v = { t: Date.now() - FRESH + 5 * 60e3, ok: true }; return save(); }   // no answer: carry on, ask again in 5 min
       // pending = clean so far, the API is still reading the copy's files: ask again in a minute
       if (r.ok !== false) { v = { t: r.pending ? Date.now() - FRESH + 60e3 : Date.now(), ok: true }; return save(); }
-      const next = { t: Date.now(), ok: false, mode: r.mode === 'cache' ? 'cache' : 'frame', link: r.link && r.link.url, homes: r.homes || [] };
-      if (next.mode === 'cache') {
-        try { Object.assign(next, await install()); markHealed(); } catch { next.mode = 'frame'; }   // could not fetch the official build: frame instead
-      }
+      const was = v;
+      const keep = was && was.ok === false && was.ver ? { ver: was.ver, files: was.files, doc: was.doc } : {};   // already healed from cache: keep it
+      const next = { t: Date.now(), ok: false, mode: keep.ver ? 'cache' : 'frame', link: r.link && r.link.url, homes: r.homes || [], ...keep };
+      // Frame first, whatever the mode: the verdict is known in about a second, the cache download takes much
+      // longer. A tab that is open on the tampered page (a first visit) is reloaded into the official frame
+      // at once, so the host's ads are gone in about a second; the cache comes for the next visit.
       v = next;
-      return save();
+      await save();
+      // not awaited: this runs inside "activate" on a first visit, and the reload's navigation needs fetch
+      // events, which wait for activation to finish
+      if (!was || was.ok !== false) reloadTabs().catch(() => {});
+      if (r.mode === 'cache') {
+        installing = (async () => {
+          try { const built = await install(); v = { ...next, ...built, mode: 'cache' }; markHealed(); await save(); } catch { /* stay on the frame */ }
+        })().finally(() => { installing = null; });
+      }
     })().catch(() => {}).finally(() => { running = null; });
     return running;
   }
 
+  async function reloadTabs() {
+    for (const c of await clients.matchAll({ type: 'window', includeUncontrolled: true })) {
+      try { const u = new URL(c.url); if (u.origin === origin && isEntry(u)) await c.navigate(c.url); } catch {}
+    }
+  }
   const isEntry = (url) => {
     const rel = url.pathname.slice(base().length);
     return url.pathname.startsWith(base()) && (rel === '' || /^(index|app)\.(svg|html?)$/.test(rel));
@@ -134,6 +149,7 @@
     const url = new URL(req.url);
     if (url.origin !== origin) return;
     if (req.mode === 'navigate' && isEntry(url)) {
+      if (installing) e.waitUntil(installing);
       e.respondWith((async () => {
         await load();
         if (!v || Date.now() - v.t > FRESH) {
@@ -158,7 +174,9 @@
       e.respondWith(caches.open('achroma-heal-' + v.ver).then((c) => c.match(origin + url.pathname)).then((r) => r || fetch(req)));
     }
   });
-  addEventListener('activate', (e) => e.waitUntil(refresh()));
+  // activation waits for the verdict only (at most 3 s): a slow API must not hold a clean copy's first load,
+  // and the cache download carries on in the background (kept alive by the next navigation's waitUntil)
+  addEventListener('activate', (e) => e.waitUntil(Promise.race([refresh(), new Promise((r) => setTimeout(r, 3000))])));
   addEventListener('message', (e) => {
     if (e.data && e.data.achromaHeal === 'check') {
       const src = e.source;
