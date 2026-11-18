@@ -128,8 +128,16 @@
   }
 
   async function reloadTabs() {
-    for (const c of await clients.matchAll({ type: 'window', includeUncontrolled: true })) {
-      try { const u = new URL(c.url); if (u.origin === origin && isEntry(u)) await c.navigate(c.url); } catch {}
+    // WindowClient.navigate only works on tabs this worker controls, and on a first visit the verdict can
+    // arrive before the engine's own claim() has run: claim here, and retry for a few seconds
+    for (let i = 0; i < 12; i++) {
+      try { await self.clients.claim(); } catch {}
+      let left = 0;
+      for (const c of await self.clients.matchAll({ type: 'window', includeUncontrolled: true })) {
+        try { const u = new URL(c.url); if (u.origin === origin && isEntry(u)) { await c.navigate(c.url); } } catch { left++; }
+      }
+      if (!left) return;
+      await new Promise((r) => setTimeout(r, 500));
     }
   }
   const isEntry = (url) => {
