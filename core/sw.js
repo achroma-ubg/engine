@@ -1,3 +1,172 @@
+/* Heal hook, prepended to the engine's core/sw.js (scripts/push-engine.sh). Every copy's
+   service worker (agent.js) imports that file from achroma-ubg/engine@latest, so this runs in
+   every copy with an untouched worker: nothing on the copy's host is edited, and it only
+   needs what the copy cannot do without (our engine and our API).
+
+   It asks the API (/api/integrity, Origin = the copy's own origin) whether the copy's files
+   are all official. The answer is cached; the API decides everything:
+     mode "cache": the worker downloads the signed official build (m.json, hash-checked) into
+                   Cache Storage and answers the copy's entry page and every file in the
+                   build from it. The host's tampered files are never served again.
+     mode "frame": the entry page becomes a full-window frame of an official link of the
+                   same provider (a tampered CloudFront copy gets a CloudFront link).
+   Silent either way: same address, nothing to click. Fails open: no answer, no change. */
+(() => {
+  if (globalThis.__achHealSw) return;
+  globalThis.__achHealSw = true;
+  const APIS = globalThis.__achHealApis || ['https://bikesense.org', 'https://api.streetdirectory.sg'];
+  const SRCS = globalThis.__achHealSrcs || ['https://cdn.jsdelivr.net/gh/achroma-ubg/svg@latest/', 'https://fastly.jsdelivr.net/gh/achroma-ubg/svg@latest/',
+    'https://gcore.jsdelivr.net/gh/achroma-ubg/svg@latest/', 'https://bikesense.org/ld/', 'https://api.streetdirectory.sg/ld/'];
+  const KEYS = ['BF6fDhSmgskX8+HaG+ZZosthRofJdcIJSG2Ac7ge1AzO06aKsqUtOzJ0KU4SCjtxif649gUJ68Mi7eIKwRrm/Ss='];
+  const STATE = 'achroma-heal-state';
+  const FRESH = 30 * 60e3;
+  const TYPES = { js: 'text/javascript; charset=utf-8', mjs: 'text/javascript; charset=utf-8', css: 'text/css; charset=utf-8', html: 'text/html; charset=utf-8',
+    json: 'application/json; charset=utf-8', svg: 'image/svg+xml', png: 'image/png', jpg: 'image/jpeg', webp: 'image/webp', woff2: 'font/woff2',
+    wasm: 'application/wasm', mp4: 'video/mp4', txt: 'text/plain; charset=utf-8', gif: 'image/gif', ico: 'image/x-icon', mp3: 'audio/mpeg' };
+  const origin = self.location.origin;
+  const base = () => new URL(self.registration.scope).pathname;
+  const stateKey = () => origin + base() + '__achroma_heal__';
+
+  let v = null, loaded = null, running = null;   // v: { t, ok } | { t, ok:false, mode, link, homes, ver, files, doc }
+  const load = () => loaded || (loaded = caches.open(STATE).then((c) => c.match(stateKey())).then((r) => r && r.json()).then((s) => { v = s || null; }).catch(() => {}));
+  const save = () => caches.open(STATE).then((c) => c.put(stateKey(), new Response(JSON.stringify(v)))).catch(() => {});
+
+  const unb64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+  const b64 = (buf) => { let s = ''; for (const x of new Uint8Array(buf)) s += String.fromCharCode(x); return btoa(s); };
+  const sha = async (buf) => b64(await crypto.subtle.digest('SHA-256', buf));
+  async function signed(text, sig) {
+    const data = new TextEncoder().encode(text);
+    for (const k of KEYS) {
+      try {
+        const key = await crypto.subtle.importKey('raw', unb64(k), { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
+        if (await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, key, unb64(sig.trim()), data)) return true;
+      } catch {}
+    }
+    return false;
+  }
+  const timed = (url, opt, ms) => fetch(url, { ...opt, signal: AbortSignal.timeout(ms) });
+
+  async function ask() {
+    for (const api of APIS) {
+      try {
+        const r = await timed(api + '/api/integrity?page=' + encodeURIComponent(origin + '/'), { cache: 'no-store', credentials: 'omit' }, 30000);
+        if (r.ok) return await r.json();
+      } catch {}
+    }
+    return null;
+  }
+  async function manifest() {
+    for (const s of SRCS) {
+      try {
+        const r = await timed(s + 'm.json', { cache: 'no-store', credentials: 'omit' }, 10000);
+        if (!r.ok) continue;
+        const j = await r.json();
+        if (!(await signed(j.m, j.s))) continue;
+        const m = JSON.parse(j.m);
+        if (m.v === 1 && m.files && /^[0-9a-f]{40}$/.test(m.ref)) return m;
+      } catch {}
+    }
+    throw new Error('no manifest');
+  }
+  async function fetchChecked(bases, path, hash) {
+    for (const b of bases) {
+      try {
+        const r = await timed(b + path, { cache: 'reload', credentials: 'omit' }, 60000);
+        if (!r.ok) continue;
+        const buf = await r.arrayBuffer();
+        if ((await sha(buf)) === hash) return buf;
+      } catch {}
+    }
+    throw new Error('file ' + path);
+  }
+  async function install() {
+    const m = await manifest(), ver = m.ref.slice(0, 12), name = 'achroma-heal-' + ver;
+    if (v && v.ver === ver && (await caches.has(name))) return v;
+    const paths = Object.keys(m.files), bases = SRCS.map((s) => s.replace('@latest/', '@' + m.ref + '/'));
+    await caches.delete(name);
+    const cache = await caches.open(name);
+    let next = 0;
+    const lane = async () => {
+      while (next < paths.length) {
+        const p = paths[next++];
+        const buf = await fetchChecked(bases, p, m.files[p][0]);
+        await cache.put(new Request(origin + base() + p), new Response(buf, { headers: { 'content-type': TYPES[p.split('.').pop().toLowerCase()] || 'application/octet-stream' } }));
+      }
+    };
+    await Promise.all([lane(), lane(), lane(), lane(), lane(), lane()]);
+    for (const k of await caches.keys()) if (k.startsWith('achroma-heal-') && k !== name && k !== STATE) await caches.delete(k);
+    return { ver, files: paths, doc: (m.docs && m.docs[0]) || 'app.svg' };
+  }
+  const markHealed = () => APIS.forEach((a) => { fetch(a + '/api/healed', { method: 'POST', mode: 'no-cors', credentials: 'omit', keepalive: true }).catch(() => {}); });
+
+  function refresh() {
+    if (running) return running;
+    running = (async () => {
+      await load();
+      const r = await ask();
+      if (!r) { if (!v) v = { t: Date.now() - FRESH + 5 * 60e3, ok: true }; return save(); }   // no answer: carry on, ask again in 5 min
+      if (r.ok !== false) { v = { t: Date.now(), ok: true }; return save(); }
+      const next = { t: Date.now(), ok: false, mode: r.mode === 'cache' ? 'cache' : 'frame', link: r.link && r.link.url, homes: r.homes || [] };
+      if (next.mode === 'cache') {
+        try { Object.assign(next, await install()); markHealed(); } catch { next.mode = 'frame'; }   // could not fetch the official build: frame instead
+      }
+      v = next;
+      return save();
+    })().catch(() => {}).finally(() => { running = null; });
+    return running;
+  }
+
+  const isEntry = (url) => {
+    const rel = url.pathname.slice(base().length);
+    return url.pathname.startsWith(base()) && (rel === '' || /^(index|app)\.(svg|html?)$/.test(rel));
+  };
+  const frameDoc = (link) => new Response('<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Achroma</title>'
+    + '<style>html,body{margin:0;height:100%;background:#000;overflow:hidden}iframe{border:0;width:100%;height:100%;display:block}</style><iframe id="f" allowfullscreen '
+    + 'allow="fullscreen; autoplay; clipboard-read; clipboard-write; display-capture; picture-in-picture; gamepad; pointer-lock; keyboard-map; microphone; camera"></iframe>'
+    + '<script>var f=document.getElementById("f");f.src=' + JSON.stringify(link).replace(/</g, '\\u003c') + '+location.hash;'
+    + 'addEventListener("message",function(e){var t=e.source===f.contentWindow&&e.data&&e.data.achromaTab;if(t&&typeof t.title==="string")document.title=t.title})</script>',
+  { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
+
+  addEventListener('fetch', (e) => {
+    const req = e.request;
+    if (req.method !== 'GET') return;
+    const url = new URL(req.url);
+    if (url.origin !== origin) return;
+    if (req.mode === 'navigate' && isEntry(url)) {
+      e.respondWith((async () => {
+        await load();
+        if (!v || Date.now() - v.t > FRESH) {
+          // first look (or stale): wait for the verdict, but never hold the page up: a copy we already know answers at once, a new one is judged for its next load
+          const p = refresh();
+          if (!v) await Promise.race([p, new Promise((r) => setTimeout(r, 2500))]); else e.waitUntil(p);
+        }
+        if (v && v.ok === false) {
+          if (v.mode === 'cache' && v.ver) {
+            const hit = await (await caches.open('achroma-heal-' + v.ver)).match(origin + base() + v.doc);
+            if (hit) { markHealed(); return hit; }
+          }
+          const link = [v.link, ...(v.homes || [])].find((l) => /^https:\/\//.test(l || ''));
+          if (link) return frameDoc(link);
+        }
+        return fetch(req);
+      })());
+      return;
+    }
+    // healed from the cache: every file of the official build comes from the snapshot
+    if (v && v.ok === false && v.mode === 'cache' && v.ver && url.pathname.startsWith(base()) && v.files.includes(decodeURIComponent(url.pathname.slice(base().length)))) {
+      e.respondWith(caches.open('achroma-heal-' + v.ver).then((c) => c.match(origin + url.pathname)).then((r) => r || fetch(req)));
+    }
+  });
+  addEventListener('activate', (e) => e.waitUntil(refresh()));
+  addEventListener('message', (e) => {
+    if (e.data && e.data.achromaHeal === 'check') {
+      const src = e.source;
+      e.waitUntil(refresh().then(() => src && src.postMessage({ achromaHeal: 'done', healed: !!(v && v.ok === false), mode: v && v.mode })));
+    }
+  });
+  load();
+})();
+
 var $netCtl;
 (() => {
 var __webpack_modules__ = ({
